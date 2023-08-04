@@ -1,0 +1,13 @@
+<html>
+  <body>
+    <script src="/engine.io-client/dist/engine.io.js"></script>
+    <script>
+      // eio = Socket
+      const socket = eio('http://localhost:3333', {upgrade: false});
+      socket.on('open', () => {
+        socket.on('message', (data) => {});
+        socket.on('close', () => {});
+      });
+    </script>
+  </body>
+</html>
