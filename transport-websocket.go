@@ -12,7 +12,7 @@ type websocketMessage struct {
 }
 
 type transportWebsocket struct {
-	*Socket
+	baseTransport
 	handler websocket.Handler
 }
 
@@ -41,58 +41,60 @@ func wsUnmarshal(msg []byte, payloadType byte, v interface{}) (err error) {
 	return nil
 }
 
-func (ws *transportWebsocket) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if ws.handler == nil {
-		ws.handler = websocket.Handler(ws.ServeWebsocket)
-	}
+func newTransportWebsocket() *transportWebsocket {
+	ws := &transportWebsocket{}
+	ws.handler = websocket.Handler(ws.serve)
+	return ws
+}
 
+func (ws *transportWebsocket) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ws.handler.ServeHTTP(w, r)
 }
 
-func (ws *transportWebsocket) ServeWebsocket(conn *websocket.Conn) {
+func (ws *transportWebsocket) serve(conn *websocket.Conn) {
+	var err error
 	message := websocketMessage{}
 	closeChan := make(chan error)
+	socket := ws.baseTransport.Socket
+	defer conn.Close()
 
-	defer func() {
-		ws.close()
-		conn.Close()
-	}()
+	if socket.state == _STATE_OPENING {
+		p := <-socket.outbox
+		if err := wsCodec.Send(conn, p.encode()); err != nil {
+			return
+		}
+		return
+	}
 
-	// handshacking for change transport
-	for isHandshackingFinished := false; !isHandshackingFinished; {
-		err := wsCodec.Receive(conn, &message)
-		if err != nil {
+	if socket.state == _STATE_UPGRADING {
+		// Probing
+		if err = wsCodec.Receive(conn, &message); err != nil {
+			return
+		}
+		if string(message.message) != "2probe" {
+			return
+		}
+		if err = wsCodec.Send(conn, "3probe"); err != nil {
 			return
 		}
 
-		switch string(message.message) {
-		case "2probe":
-			if err := wsCodec.Send(conn, "3probe"); err != nil {
-				return
-			}
-			ws.Transport = TRANSPORT_WEBSOCKET
-			if ws.isPollingWaiting {
-				ws.mtx.Lock()
-				if ws.outbox != nil {
-					ws.outbox <- newPacket(PACKET_NOOP, []byte{})
-				}
-				ws.mtx.Unlock()
-			}
-
-		case string(PACKET_UPGRADE):
-			isHandshackingFinished = true
-
-		default:
+		// upgrade
+		if err = wsCodec.Receive(conn, &message); err != nil {
 			return
+		}
+		if string(message.message) != string(PACKET_UPGRADE) {
+			socket.onUpgraded()
 		}
 	}
+
+	defer socket.close()
 
 	go func(*websocket.Conn, *transportWebsocket) {
 		var p *packet
 		message := websocketMessage{}
 
 		// listener: packet reciever
-		for ws.IsConnected {
+		for socket.IsConnected {
 			p = nil
 			if err := wsCodec.Receive(conn, &message); err != nil {
 				closeChan <- err
@@ -117,19 +119,19 @@ func (ws *transportWebsocket) ServeWebsocket(conn *websocket.Conn) {
 			}
 
 			select {
-			case <-ws.ctx.Done():
+			case <-socket.ctx.Done():
 				continue
 
-			case ws.inbox <- p:
+			case socket.inbox <- p:
 				continue
 			}
 		}
 	}(conn, ws)
 
 	// listener: packet sender
-	for ws.IsConnected {
+	for socket.IsConnected {
 		select {
-		case p := <-ws.outbox:
+		case p := <-socket.outbox:
 			if p.packetType == PACKET_PAYLOAD {
 				if err := wsCodec.Send(conn, p.data); err != nil {
 					return

@@ -15,12 +15,16 @@ type Server struct {
 	sockets    map[uuid.UUID]*Socket
 	socketsMtx *sync.Mutex
 
+	ctx       context.Context
+	ctxCancel context.CancelFunc
+
 	handlers struct {
 		connection func(*Socket)
 	}
 }
 
 func NewServer(opt Options) (server *Server) {
+	ctx, cancelFunc := context.WithCancel(context.Background())
 	server = &Server{
 		options: Options{
 			PingInterval: opt.PingInterval,
@@ -28,6 +32,12 @@ func NewServer(opt Options) (server *Server) {
 		},
 		sockets:    map[uuid.UUID]*Socket{},
 		socketsMtx: &sync.Mutex{},
+		ctx:        ctx,
+		ctxCancel:  cancelFunc,
+	}
+
+	if opt.BasePath == "" {
+		server.options.BasePath = "/engine.io/"
 	}
 
 	return server
@@ -37,8 +47,12 @@ func (server *Server) Handler() http.Handler {
 	return server
 }
 
-func (server *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	version := req.URL.Query().Get("EIO")
+func (server *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != server.options.BasePath {
+		return
+	}
+
+	version := r.URL.Query().Get("EIO")
 	v, err := strconv.Atoi(version)
 	if err != nil {
 		w.Write([]byte("Get version error"))
@@ -49,23 +63,34 @@ func (server *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	sid := req.URL.Query().Get("sid")
-	transport := req.URL.Query().Get("transport")
+	sid := r.URL.Query().Get("sid")
+	transportName := r.URL.Query().Get("transport")
 
-	socket := newSocket(server, sid)
-	ctxWithSocket := context.WithValue(req.Context(), ctxKeySocket, socket)
+	socket := server.createSocket(sid, transportName)
+	socket.transport.ServeHTTP(w, r)
+}
 
-	if transport == "websocket" {
-		socket.Transport = TRANSPORT_WEBSOCKET
+func (server *Server) createSocket(sid string, transportName string) *Socket {
+	var uid uuid.UUID
+
+	if sid == "" {
+		uid = uuid.New()
+	} else {
+		uid = uuid.MustParse(sid)
 	}
 
-	switch transport {
-	case "polling":
-		socket.transportPolling.ServeHTTP(w, req.WithContext(ctxWithSocket))
+	// search socket in memory
+	server.socketsMtx.Lock()
+	defer server.socketsMtx.Unlock()
 
-	case "websocket":
-		socket.transportWebsocket.ServeHTTP(w, req.WithContext(ctxWithSocket))
+	socket, isFound := server.sockets[uid]
+	if !isFound || socket == nil {
+		socket = newSocket(server, uid)
+		newTransport(transportName, socket)
+		server.sockets[uid] = socket
 	}
+
+	return socket
 }
 
 func (server *Server) OnConnection(f func(*Socket)) {

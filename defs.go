@@ -16,6 +16,8 @@ const (
 type Options struct {
 	PingInterval int
 	PingTimeout  int
+
+	BasePath string
 }
 
 var ErrSocketClosed = errors.New("Socket closed")

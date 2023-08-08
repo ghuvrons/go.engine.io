@@ -1,12 +1,23 @@
 <html>
   <body>
     <script src="/engine.io-client/dist/engine.io.js"></script>
+    
+    <script src="https://cdn.socket.io/4.4.1/socket.io.min.js" 
+            integrity="sha384-fKnu0iswBIqkjxrhQCTZ7qlLHOFEgNkRmK2vaO/LbTZSXdJfAu6ewRBdwHPhBo/H" 
+            crossorigin="anonymous"></script>
     <script>
       // eio = Socket
-      const socket = eio('http://localhost:3333', {upgrade: false});
-      socket.on('open', () => {
-        socket.on('message', (data) => {});
-        socket.on('close', () => {});
+      // const socket = eio('ws://localhost:3333/', {transports: ["websocket"]});
+      // socket.on('open', () => {
+      //   socket.on('message', (data) => {});
+      //   socket.on('close', () => {});
+      // });
+
+      var socketIo = io("ws://localhost:8000", { transports: ["websocket"] });
+      socketIo.on("connect", () => {
+        console.log("connected id:", socketIo.id);
+        testerList[TEST_CONNECT].isSuccess = true;
+        run();
       });
     </script>
   </body>

@@ -9,10 +9,12 @@ import (
 	"github.com/google/uuid"
 )
 
+type socketState byte
 type Socket struct {
 	server           *Server
 	mtx              *sync.Mutex
 	id               uuid.UUID
+	state            socketState
 	IsConnected      bool
 	Transport        TransportType
 	inbox            chan *packet
@@ -20,6 +22,7 @@ type Socket struct {
 	isPollingWaiting bool
 	IsReadingPayload bool
 
+	transport
 	transportPolling
 	transportWebsocket
 
@@ -32,42 +35,48 @@ type Socket struct {
 	ctxCancelFunc context.CancelFunc
 }
 
-func newSocket(server *Server, id string) *Socket {
-	var uid uuid.UUID
+const (
+	_STATE_OPENING socketState = iota
+	_STATE_OPEN
+	_STATE_UPGRADING
+	_STATE_CLOSING
+	_STATE_CLOSED
+)
 
-	if id == "" {
-		uid = uuid.New()
-	} else {
-		uid = uuid.MustParse(id)
+func newSocket(server *Server, id uuid.UUID) *Socket {
+	ctx, cancelFunc := context.WithCancel(server.ctx)
+	socket := &Socket{
+		server:        server,
+		id:            id,
+		mtx:           &sync.Mutex{},
+		IsConnected:   false,
+		inbox:         make(chan *packet),
+		outbox:        make(chan *packet),
+		Transport:     TRANSPORT_POLLING,
+		ctx:           ctx,
+		ctxCancelFunc: cancelFunc,
 	}
 
-	// search socket in memory
-	server.socketsMtx.Lock()
-	defer server.socketsMtx.Unlock()
-
-	socket, isFound := server.sockets[uid]
-	if !isFound || socket == nil {
-		ctx, cancelFunc := context.WithCancel(context.Background())
-		socket = &Socket{
-			server:        server,
-			mtx:           &sync.Mutex{},
-			id:            uid,
-			IsConnected:   false,
-			inbox:         make(chan *packet),
-			outbox:        make(chan *packet, 4),
-			Transport:     TRANSPORT_POLLING,
-			ctx:           ctx,
-			ctxCancelFunc: cancelFunc,
-		}
-
-		socket.transportPolling.Socket = socket
-		socket.transportWebsocket.Socket = socket
-
-		server.sockets[uid] = socket
-		go socket.handle()
-	}
+	go socket.handle()
 
 	return socket
+}
+
+// open socket
+func (socket *Socket) open() error {
+	data := map[string]interface{}{
+		"sid":          socket.id.String(),
+		"upgrades":     []string{"websocket"},
+		"pingInterval": socket.server.options.PingInterval,
+		"pingTimeout":  socket.server.options.PingTimeout,
+	}
+	socket.IsConnected = true
+	jsonData, _ := json.Marshal(data)
+	if err := socket.sendPacket(newPacket(PACKET_OPEN, jsonData)); err != nil {
+		return err
+	}
+	socket.state = _STATE_OPEN
+	return nil
 }
 
 // handle socket message, ping, etc
@@ -82,8 +91,14 @@ func (socket *Socket) handle() error {
 	pingIntervalTimer = time.NewTimer(time.Duration(socket.server.options.PingInterval) * time.Millisecond)
 	pingTimer = pingIntervalTimer
 
-	if !socket.IsConnected {
-		socket.connect()
+	if socket.state == _STATE_OPENING {
+		if err = socket.open(); err != nil {
+			return err
+		}
+	}
+
+	if socket.server.handlers.connection != nil {
+		socket.server.handlers.connection(socket)
 	}
 
 	for {
@@ -142,22 +157,6 @@ close:
 	return err
 }
 
-// Handle request connect by socket
-func (socket *Socket) connect() {
-	data := map[string]interface{}{
-		"sid":          socket.id.String(),
-		"upgrades":     []string{"websocket"},
-		"pingInterval": socket.server.options.PingInterval,
-		"pingTimeout":  socket.server.options.PingTimeout,
-	}
-	socket.IsConnected = true
-	jsonData, _ := json.Marshal(data)
-	socket.sendPacket(newPacket(PACKET_OPEN, jsonData))
-	if socket.server.handlers.connection != nil {
-		socket.server.handlers.connection(socket)
-	}
-}
-
 // Send to socket client
 func (socket *Socket) Send(message interface{}, timeout ...time.Duration) error {
 	var p *packet = &packet{}
@@ -193,6 +192,14 @@ func (socket *Socket) sendPacket(p *packet, timeout ...time.Duration) error {
 	case <-socket.ctx.Done():
 		return ErrSocketClosed
 	}
+}
+
+func (socket *Socket) onUpgraded() {
+	if socket.isPollingWaiting {
+		socket.sendPacket(newPacket(PACKET_NOOP, []byte{}))
+	}
+
+	socket.state = _STATE_OPEN
 }
 
 func (socket *Socket) SetCtxValue(key ContextKey, value interface{}) {

@@ -14,10 +14,12 @@ import (
 // }
 
 type transportPolling struct {
-	*Socket
+	baseTransport
 }
 
 func (p *transportPolling) onDataRequest(data io.ReadCloser) error {
+	socket := p.baseTransport.Socket
+
 	b, err := io.ReadAll(data)
 	if err != nil {
 		return err
@@ -31,10 +33,10 @@ func (p *transportPolling) onDataRequest(data io.ReadCloser) error {
 
 		packet, _ := decodePacket(buf)
 		select {
-		case <-p.ctx.Done():
+		case <-socket.ctx.Done():
 			return nil
 
-		case p.inbox <- packet:
+		case socket.inbox <- packet:
 			continue
 		}
 	}
@@ -43,37 +45,37 @@ func (p *transportPolling) onDataRequest(data io.ReadCloser) error {
 
 // Handle transport polling
 func (p *transportPolling) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	socket := p.baseTransport.Socket
 
 	switch req.Method {
 	// listener: packet sender
 	case "GET":
-		if p.Socket == nil {
+		if socket == nil {
 			packet := newPacket(PACKET_CLOSE, []byte{})
 			w.Write([]byte(packet.encode()))
 			return
 		}
 
-		if p.Transport != TRANSPORT_POLLING {
+		if socket.Transport != TRANSPORT_POLLING {
 			if _, err := w.Write([]byte(newPacket(PACKET_NOOP, []byte{}).encode())); err != nil {
-				p.close()
+				socket.close()
 				return
 			}
 			return
 		}
 
-		p.isPollingWaiting = true
+		socket.isPollingWaiting = true
 		select {
 		case <-req.Context().Done():
-			p.close()
 			return
 
-		case packet := <-p.outbox:
+		case packet := <-socket.outbox:
 			if _, err := w.Write([]byte(packet.encode())); err != nil {
-				p.close()
+				socket.close()
 				return
 			}
 		}
-		p.isPollingWaiting = false
+		socket.isPollingWaiting = false
 
 	// listener: packet reciever
 	case "POST":
