@@ -63,10 +63,7 @@ func (ws *transportWebsocket) serve(conn *websocket.Conn) {
 		if err := wsCodec.Send(conn, p.encode()); err != nil {
 			return
 		}
-		return
-	}
-
-	if socket.state == _STATE_UPGRADING {
+	} else if socket.state == _STATE_UPGRADING {
 		// Probing
 		if err = wsCodec.Receive(conn, &message); err != nil {
 			return
@@ -78,13 +75,20 @@ func (ws *transportWebsocket) serve(conn *websocket.Conn) {
 			return
 		}
 
-		// upgrade
+		socket.onUpgraded()
+
+		// upgraded
 		if err = wsCodec.Receive(conn, &message); err != nil {
 			return
 		}
 		if string(message.message) != string(PACKET_UPGRADE) {
-			socket.onUpgraded()
+			return
 		}
+
+		socket.setTransport(ws)
+
+	} else {
+		return
 	}
 
 	defer socket.close()

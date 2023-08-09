@@ -2,6 +2,7 @@ package engineIO
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"net/http"
 )
@@ -56,7 +57,7 @@ func (p *transportPolling) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 
-		if socket.Transport != TRANSPORT_POLLING {
+		if socket.transportType != _TRANSPORT_POLLING {
 			if _, err := w.Write([]byte(newPacket(PACKET_NOOP, []byte{}).encode())); err != nil {
 				socket.close()
 				return
@@ -64,9 +65,17 @@ func (p *transportPolling) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 
+		fmt.Println("polling", p, p.ctxCancel)
 		socket.isPollingWaiting = true
 		select {
 		case <-req.Context().Done():
+			return
+
+		case <-p.ctx.Done():
+			fmt.Println("polling end", socket, p, p.ctxCancel)
+			if _, err := w.Write([]byte(newPacket(PACKET_NOOP, []byte{}).encode())); err != nil {
+				return
+			}
 			return
 
 		case packet := <-socket.outbox:

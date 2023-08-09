@@ -38,6 +38,8 @@ func NewServer(opt Options) (server *Server) {
 
 	if opt.BasePath == "" {
 		server.options.BasePath = "/engine.io/"
+	} else {
+		server.options.BasePath = opt.BasePath
 	}
 
 	return server
@@ -65,12 +67,21 @@ func (server *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	sid := r.URL.Query().Get("sid")
 	transportName := r.URL.Query().Get("transport")
+	tType := _TRANSPORT_POLLING
+	if transportName == "websocket" {
+		tType = _TRANSPORT_WEBSOCKET
+	}
 
-	socket := server.createSocket(sid, transportName)
+	socket := server.createSocket(sid, tType)
+	if tType != socket.transportType && tType == _TRANSPORT_WEBSOCKET {
+		socket.upgrade().ServeHTTP(w, r)
+		return
+	}
+
 	socket.transport.ServeHTTP(w, r)
 }
 
-func (server *Server) createSocket(sid string, transportName string) *Socket {
+func (server *Server) createSocket(sid string, tType transportType) *Socket {
 	var uid uuid.UUID
 
 	if sid == "" {
@@ -85,8 +96,7 @@ func (server *Server) createSocket(sid string, transportName string) *Socket {
 
 	socket, isFound := server.sockets[uid]
 	if !isFound || socket == nil {
-		socket = newSocket(server, uid)
-		newTransport(transportName, socket)
+		socket = newSocket(server, uid, tType)
 		server.sockets[uid] = socket
 	}
 

@@ -16,15 +16,12 @@ type Socket struct {
 	id               uuid.UUID
 	state            socketState
 	IsConnected      bool
-	Transport        TransportType
 	inbox            chan *packet
 	outbox           chan *packet
 	isPollingWaiting bool
-	IsReadingPayload bool
 
 	transport
-	transportPolling
-	transportWebsocket
+	transportType
 
 	handlers struct {
 		message func(interface{})
@@ -43,7 +40,9 @@ const (
 	_STATE_CLOSED
 )
 
-func newSocket(server *Server, id uuid.UUID) *Socket {
+func newSocket(server *Server, id uuid.UUID, tType transportType) *Socket {
+	var t transport
+
 	ctx, cancelFunc := context.WithCancel(server.ctx)
 	socket := &Socket{
 		server:        server,
@@ -52,10 +51,18 @@ func newSocket(server *Server, id uuid.UUID) *Socket {
 		IsConnected:   false,
 		inbox:         make(chan *packet),
 		outbox:        make(chan *packet),
-		Transport:     TRANSPORT_POLLING,
+		transportType: tType,
 		ctx:           ctx,
 		ctxCancelFunc: cancelFunc,
 	}
+
+	if socket.transportType == _TRANSPORT_WEBSOCKET {
+		t = newTransportWebsocket()
+	} else {
+		t = &transportPolling{}
+	}
+
+	socket.setTransport(t)
 
 	go socket.handle()
 
@@ -195,20 +202,8 @@ func (socket *Socket) sendPacket(p *packet, timeout ...time.Duration) error {
 }
 
 func (socket *Socket) onUpgraded() {
-	if socket.isPollingWaiting {
-		socket.sendPacket(newPacket(PACKET_NOOP, []byte{}))
-	}
-
+	socket.transport.close()
 	socket.state = _STATE_OPEN
-}
-
-func (socket *Socket) SetCtxValue(key ContextKey, value interface{}) {
-	socket.ctx = context.WithValue(socket.ctx, key, value)
-}
-
-func (socket *Socket) GetCtxValue(key ContextKey) (value interface{}) {
-	value = socket.ctx.Value(key)
-	return
 }
 
 // OnMessage add handler on incoming new message. Second argument can be string or bytes
@@ -221,11 +216,25 @@ func (socket *Socket) OnClosed(f func()) {
 	socket.handlers.closed = f
 }
 
-func (socket *Socket) close() {
+func (socket *Socket) Close() {
 	socket.ctxCancelFunc()
 
 	socket.mtx.Lock()
 	close(socket.outbox)
 	socket.outbox = nil
 	socket.mtx.Unlock()
+}
+
+func (socket *Socket) setTransport(t transport) {
+	t.setSocket(socket)
+	socket.transport = t
+}
+
+func (socket *Socket) upgrade() transport {
+	socket.state = _STATE_UPGRADING
+
+	t := newTransportWebsocket()
+	t.setSocket(socket)
+
+	return t
 }

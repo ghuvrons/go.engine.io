@@ -2,14 +2,15 @@ package engineIO
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 )
 
 type transportType byte
-type transportState byte
 type transport interface {
 	setSocket(socket *Socket)
 	ServeHTTP(w http.ResponseWriter, r *http.Request)
+	close()
 }
 
 const (
@@ -23,25 +24,15 @@ type baseTransport struct {
 	ctxCancel context.CancelFunc
 }
 
-func newTransport(transportName string, socket *Socket) transport {
-	var t transport
-	if transportName == "websocket" {
-		t = newTransportWebsocket()
-	} else {
-		t = &transportPolling{}
-	}
-
-	t.setSocket(socket)
-	socket.transport = t
-
-	return t
-}
-
 func (t *baseTransport) setSocket(socket *Socket) {
+	if t.Socket == socket {
+		return
+	}
 	t.Socket = socket
 	t.ctx, t.ctxCancel = context.WithCancel(socket.ctx)
 }
 
 func (t *baseTransport) close() {
+	fmt.Println("closing", t, t.ctxCancel)
 	t.ctxCancel()
 }
